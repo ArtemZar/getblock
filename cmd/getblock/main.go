@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"getblock/internal/server"
-	log "github.com/sirupsen/logrus"
 	"os"
 	"os/signal"
 	"syscall"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -17,7 +18,7 @@ func main() {
 
 	go func(ctx context.Context) {
 		s := server.New(server.NewCofig())
-		if err := s.Start(); err != nil {
+		if err := s.Start(ctx); err != nil {
 			log.Fatal(err)
 		}
 	}(ctx)

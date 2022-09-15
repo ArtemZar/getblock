@@ -2,10 +2,12 @@ package blocks
 
 import (
 	"context"
+	"fmt"
 	"getblock/configs"
 	"getblock/internal/jrpc"
 	"getblock/internal/transactions"
-	log "github.com/sirupsen/logrus"
+	"math/big"
+	"strconv"
 )
 
 type Block struct {
@@ -32,29 +34,24 @@ type Block struct {
 	Uncles           []interface{}               `json:"uncles"`
 }
 
-// GetLastBlockData gets the data of the last block via the json-rpc method by number
-func GetLastBlockData(ctx context.Context, rpcClient *jrpc.RpcClient) *Block {
-	lastBlockNumber := rpcClient.GetLastBlockNumber(ctx)
-	blockData := rpcClient.GetBlockData(ctx, lastBlockNumber, configs.MethodGetBlockByNumber, true)
-	block := &Block{}
-	if err := blockData.GetObject(&block); err != nil || block == nil {
-		log.Info("some error on json unmarshal level or json result field was null ", err)
+// GetTrxsFromBlock getting one block by number and analyzing transaction by it.
+// Collection with addresses and amounts sending to chenal for merge after.
+func GetTrxsFromBlock(ctx context.Context, rpcClient *jrpc.RpcClient, storCh chan map[string]*big.Int, blockNum int64) error {
+	blockNumStr := "0x" + strconv.FormatInt(blockNum, 16)
+	blockData, err := rpcClient.GetBlockData(ctx, blockNumStr, configs.MethodGetBlockByNumber, true)
+	if err != nil {
+		return fmt.Errorf("can't take data from block %s. Get error: %v", blockNumStr, err)
 	}
-	return block
-}
+	var block = Block{}
+	if err := blockData.GetObject(&block); err != nil {
+		return fmt.Errorf("some error on json unmarshal level or json result field was null. Get error: %v", err)
+	}
 
-// CreateBlocsStorege сreates a storege of chain block data
-func CreateBlocsStorege(ctx context.Context, rpcClient *jrpc.RpcClient) [configs.NumOfBlocs]Block {
-	var blocksStorage [configs.NumOfBlocs]Block
-	nextBlock := GetLastBlockData(ctx, rpcClient)
-	blocksStorage[0] = *nextBlock
-	for i := 1; i < configs.NumOfBlocs; i++ {
-		blockData := rpcClient.GetBlockData(ctx, nextBlock.ParentHash, configs.MethodGetBlockByHash, true)
-		nextBlock = &Block{}
-		if err := blockData.GetObject(&nextBlock); err != nil || nextBlock == nil {
-			log.Info("some error on json unmarshal level or json result field was null ", err)
-		}
-		blocksStorage[i] = *nextBlock
+	addressesStorage, err := transactions.AddressRebalancing(block.Transactions)
+	if err != nil {
+		return fmt.Errorf("can't fills the address storage  from block %s. Get error: %v", blockNumStr, err)
 	}
-	return blocksStorage
+	storCh <- addressesStorage
+
+	return nil
 }

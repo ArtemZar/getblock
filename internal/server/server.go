@@ -3,14 +3,15 @@ package server
 import (
 	"context"
 	"fmt"
+	"getblock/configs"
 	"getblock/internal/blocks"
 	"getblock/internal/jrpc"
-	"getblock/internal/transactions"
-	"github.com/gorilla/mux"
-	log "github.com/sirupsen/logrus"
 	"math/big"
 	"net/http"
 	"sync"
+
+	"github.com/gorilla/mux"
+	log "github.com/sirupsen/logrus"
 )
 
 type Server struct {
@@ -27,12 +28,12 @@ func New(config *Config) *Server {
 	}
 }
 
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
 	if err := s.configureLogger(); err != nil {
 		return err
 	}
 
-	s.configureRouter()
+	s.configureRouter(ctx)
 
 	s.logger.Info("The Server is starting")
 
@@ -48,9 +49,9 @@ func (s *Server) configureLogger() error {
 	return nil
 }
 
-func (s *Server) configureRouter() {
+func (s *Server) configureRouter(ctx context.Context) {
 	s.router.HandleFunc("/", s.handleIndex())
-	s.router.HandleFunc("/find_address/{apikey}", s.handleFindAddress())
+	s.router.HandleFunc("/find_address/{apikey}", s.handleFindAddress(ctx))
 
 }
 
@@ -60,30 +61,71 @@ func (s *Server) handleIndex() http.HandlerFunc {
 	}
 }
 
-func (s *Server) handleFindAddress() http.HandlerFunc {
+func (s *Server) handleFindAddress(ctx context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// get Api key
 		vars := mux.Vars(r)
 		apiKey := vars["apikey"] // or os.Args[1]
+
+		// init json rpc client
 		client := jrpc.Init(apiKey)
 		rpcClient := &jrpc.RpcClient{
 			RpcClient: client.NewRpc(),
 		}
 
-		BlocksStorage := blocks.CreateBlocsStorege(context.Background(), rpcClient)
+		fullAddrStorage := make(map[string]*big.Int)
+		storCh := make(chan map[string]*big.Int, 10)
+		wg := sync.WaitGroup{}
 
-		addressesStorage := make(map[string]*big.Int)
-		wg := &sync.WaitGroup{}
-		mu := &sync.Mutex{}
-
-		for _, vol := range BlocksStorage {
-			wg.Add(1)
-			go transactions.AddressRebalancing(&addressesStorage, vol.Transactions, wg, mu)
+		lastBlockNumber, err := rpcClient.GetLastBlockNumber(context.Background())
+		if err != nil {
+			s.logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
-		wg.Wait()
 
+		// Bypass of blocks
+		for i := int64(0); i < configs.NumOfBlocs; i++ {
+			wg.Add(1)
+			go func(blockNum int64) {
+				defer wg.Done()
+				err := blocks.GetTrxsFromBlock(ctx, rpcClient, storCh, blockNum)
+				if err != nil {
+					s.logger.Errorf("error get trxs from block, %v", err)
+					//TODO abort process or not
+				}
+			}(lastBlockNumber - i)
+		}
+
+		// merging all collections in one
+		readCh := make(chan struct{})
+		go func() {
+		Loop:
+			for {
+				newData, ok := <-storCh
+				if newData == nil && !ok {
+					break Loop
+				}
+				for k, v := range newData {
+					if _, ok := fullAddrStorage[k]; !ok {
+						fullAddrStorage[k] = v
+					} else {
+						fullAddrStorage[k].Add(fullAddrStorage[k], v)
+					}
+				}
+			}
+			readCh <- struct{}{}
+		}()
+
+		wg.Wait()
+		close(storCh)
+		<-readCh
+		close(readCh)
+
+		// finding max value
 		address := ""
 		change := big.NewInt(0)
-		for key, val := range addressesStorage {
+		for key, val := range fullAddrStorage {
 			if val.Cmp(change) == 1 {
 				change = val
 				address = key

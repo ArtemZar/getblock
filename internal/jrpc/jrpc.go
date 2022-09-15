@@ -2,8 +2,10 @@ package jrpc
 
 import (
 	"context"
+	"fmt"
 	"getblock/configs"
-	log "github.com/sirupsen/logrus"
+	"strconv"
+
 	"github.com/ybbus/jsonrpc/v3"
 )
 
@@ -34,19 +36,24 @@ type RpcClient struct {
 }
 
 // GetLastBlockNumber gets the number of the last block via the json-rpc method
-func (rc *RpcClient) GetLastBlockNumber(ctx context.Context) string {
+func (rc *RpcClient) GetLastBlockNumber(ctx context.Context) (int64, error) {
 	response, err := rc.RpcClient.Call(ctx, configs.MethodGetLastBlockNumber)
 	if err != nil {
-		log.Info("Something is wrong with the json-rpc response", err)
+		return 0, fmt.Errorf("something is wrong with the json-rpc response. Error: %v", err)
 	}
-	return response.Result.(string)
+	numberInt, err := strconv.ParseInt(response.Result.(string)[2:], 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("block number is not parse to hex int: %v", err)
+	}
+
+	return numberInt, nil
 }
 
 // GetBlockData gets the data of the next block via the json-rpc method by hash
-func (rc *RpcClient) GetBlockData(ctx context.Context, blockID, method string, fullTxObj bool) *jsonrpc.RPCResponse {
+func (rc *RpcClient) GetBlockData(ctx context.Context, blockID string, method string, fullTxObj bool) (*jsonrpc.RPCResponse, error) {
 	response, err := rc.RpcClient.Call(ctx, method, blockID, fullTxObj)
 	if err != nil {
-		log.Info("Something is wrong with the json-rpc response", err)
+		return nil, fmt.Errorf("something is wrong with the json-rpc response, with error: %v", err)
 	}
-	return response
+	return response, nil
 }
